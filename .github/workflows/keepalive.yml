@@ -1,0 +1,51 @@
+name: instabox-keepalive
+
+# Autowake untuk VPS InstaBox (hermesjabrix).
+# Kenapa di sini: mesin yang mati gak bisa bangunin dirinya sendiri.
+# Pemicu harus dari LUAR mesin — GitHub Actions ini yang jadi pemicunya.
+
+on:
+  schedule:
+    # tiap 20 menit. GitHub bisa telat 5-15 menit saat load tinggi,
+    # masih di bawah ambang auto-suspend 30 menit.
+    - cron: "*/20 * * * *"
+  workflow_dispatch:   # tombol manual di tab Actions
+
+permissions: {}
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake InstaBox machine
+        env:
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+          MACHINE_ID: ${{ secrets.INSTABOX_MACHINE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INSTABOX_API_KEY}" ] || [ -z "${MACHINE_ID}" ]; then
+            echo "::error::Secret INSTABOX_API_KEY atau INSTABOX_MACHINE_ID belum diisi"
+            exit 1
+          fi
+
+          # wake = resume kalau idle-suspended, no-op (200) kalau sudah running
+          code=$(curl -sS -o /tmp/wake.json -w '%{http_code}' \
+            -X POST "https://api.instabox.sh/v1/machines/${MACHINE_ID}/wake" \
+            -H "Authorization: Bearer ${INSTABOX_API_KEY}" \
+            --max-time 25) || code=000
+
+          echo "wake http_code=${code}"
+          head -c 400 /tmp/wake.json 2>/dev/null || true
+          echo
+
+          # 200 = sukses. Selain itu (mis. 409/503) bukan fatal: percobaan
+          # berikutnya 20 menit lagi. Jangan gagalkan workflow supaya
+          # tidak menumpuk email notifikasi.
+          if [ "${code}" != "200" ]; then
+            echo "::warning::wake tidak 200 (${code}) — retry di tick berikutnya"
+          fi
